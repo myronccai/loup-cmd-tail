@@ -1,28 +1,41 @@
 @mode(host.dual)
 
-from appinfo import (APP_NAME, APP_VERSION, APP_SUMMARY);
-from cli.args import (DEFAULT_GREETING);
+from appinfo import (APP_NAME, APP_VERSION);
 
 pub func usage(): string {
     let lines = [
-        i"usage: {$ APP_NAME $} [OPTIONS] COMMAND [ARGS...]",
+        i"Usage: {$ APP_NAME $} [OPTION]... [FILE]...",
+        "Print the last 10 lines of each FILE to standard output.",
+        "With more than one FILE, precede each with a header giving the file name.",
         "",
-        APP_SUMMARY,
+        "With no FILE, or when FILE is -, read standard input.",
         "",
-        "Commands:",
-        "  hello [NAME]          Print a greeting (NAME defaults to 'world')",
-        "  help                  Show this help",
+        "Mandatory arguments to long options are mandatory for short options too.",
+        "  -c, --bytes=[+]NUM       output the last NUM bytes; or use -c +NUM to",
+        "                             output starting with byte NUM of each file",
+        "  -f, --follow[={name|descriptor}]",
+        "                           output appended data as the file grows",
+        "  -n, --lines=[+]NUM       output the last NUM lines, instead of the last 10;",
+        "                             or use -n +NUM to skip NUM-1 lines at the start",
+        "  -q, --quiet, --silent    never output headers giving file names",
+        "  -s, --sleep-interval=N   with -f, sleep for approximately N seconds",
+        "                             (default 1.0) between iterations",
+        "  -v, --verbose            always output headers giving file names",
+        "  -z, --zero-terminated    line delimiter is NUL, not newline",
+        "      --help               display this help and exit",
+        "      --version            output version information and exit",
         "",
-        "Options:",
-        i"  -g, --greeting TEXT   Greeting used by 'hello' (default: {$ DEFAULT_GREETING $})",
-        "      --shout           Print the greeting in upper case",
-        "  -v, --verbose         Print diagnostic messages to stderr",
-        "  -h, --help            Show this help and exit",
-        "  -V, --version         Show the version and exit",
+        "NUM may have a multiplier suffix:",
+        "b 512, kB 1000, K 1024, MB 1000*1000, M 1024*1024,",
+        "GB 1000*1000*1000, G 1024*1024*1024, and so on for T, P, E.",
+        "Binary prefixes can be used, too: KiB=K, MiB=M, and so on.",
+        "",
+        "With --follow (-f), tail checks each FILE every N seconds and prints",
+        "what was appended to it since the last check.",
     ];
     return lines.join("\n");
 }
 
 pub func version_line(): string {
-    return i"{$ APP_NAME $} {$ APP_VERSION $}";
+    return i"{$ APP_NAME $} (loup-cmd-{$ APP_NAME $}) {$ APP_VERSION $}";
 }

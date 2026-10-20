@@ -1,0 +1,54 @@
+@mode(host.dual)
+
+from debug.assert import (expect, expectEq);
+from cli.args import (parse_args);
+from commands.tail import (tail_lines, first_byte, header, show_headers, quote_name, io_reason);
+
+func test_last_lines(): void {
+    expectEq(tail_lines("1\n2\n3\n", 2, false, "\n"), "2\n3\n", "two of three");
+    expectEq(tail_lines("1\n2\n3\n", 5, false, "\n"), "1\n2\n3\n", "more than there are");
+    expectEq(tail_lines("1\n2\n3", 1, false, "\n"), "3", "last line without newline");
+    expectEq(tail_lines("1\n2\n3\n", 0, false, "\n"), "", "zero");
+    expectEq(tail_lines("", 10, false, "\n"), "", "empty");
+    expectEq(tail_lines("\n\n\n", 2, false, "\n"), "\n\n", "empty lines");
+}
+
+func test_lines_from_start(): void {
+    expectEq(tail_lines("1\n2\n3\n", 2, true, "\n"), "2\n3\n", "+2");
+    expectEq(tail_lines("1\n2\n3\n", 1, true, "\n"), "1\n2\n3\n", "+1 is everything");
+    expectEq(tail_lines("1\n2\n3\n", 0, true, "\n"), "1\n2\n3\n", "+0 is everything");
+    expectEq(tail_lines("1\n2\n3", 3, true, "\n"), "3", "+3 reaches the partial line");
+    expectEq(tail_lines("1\n2\n3\n", 4, true, "\n"), "", "past the end");
+}
+
+func test_nul_delimiter(): void {
+    let nul = str(char.of(0));
+    expectEq(tail_lines("a" + nul + "b" + nul + "c", 2, false, nul), "b" + nul + "c", "-z");
+    expectEq(tail_lines("a\nb" + nul + "c" + nul, 1, false, nul), "c" + nul, "newlines are data under -z");
+}
+
+func test_first_byte(): void {
+    expectEq(first_byte(10, 3, false), 7, "last 3");
+    expectEq(first_byte(10, 30, false), 0, "all");
+    expectEq(first_byte(10, 3, true), 2, "from byte 3");
+    expectEq(first_byte(10, 0, true), 0, "+0");
+    expectEq(first_byte(10, 30, true), 10, "past the end");
+}
+
+func test_headers(): void {
+    expectEq(header("a", true), "==> a <==\n", "first");
+    expectEq(header("b", false), "\n==> b <==\n", "later");
+    let auto = parse_args(["x"]).unwrap();
+    expect(!show_headers(auto, 1) and show_headers(auto, 2), "auto");
+    expect(show_headers(parse_args(["-v"]).unwrap(), 1), "-v");
+    expect(!show_headers(parse_args(["-q"]).unwrap(), 3), "-q");
+}
+
+func test_quote_name(): void {
+    expectEq(quote_name("a b"), "'a b'", "single quotes");
+    expectEq(quote_name("it's"), "\"it's\"", "double quotes around a quote");
+}
+
+func test_io_reason(): void {
+    expectEq(io_reason("read_text failed on 'x': Permission denied (os error 13)"), "Permission denied", "reason");
+}

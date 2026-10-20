@@ -1,45 +1,230 @@
 @mode(host.dual)
 
-# Command-line parsing. Loup 1.26 has no CLI library, so arguments are
-# parsed by hand into an Options value.
-#
-# Grammar: [OPTIONS] COMMAND [OPERANDS...]
-#   Options may appear anywhere before `--`; everything after `--` is an
-#   operand. Value options accept `--name VALUE` and `--name=VALUE`.
+# Command-line parsing for tail, following GNU getopt_long: short options
+# may be combined (`-qn5`), and `-n`/`-c`/`-s` take the rest of their group
+# or the next argument as their value; options and operands may be mixed;
+# `--` ends the options; a lone `-` is an operand (standard input); a long
+# option may be abbreviated to any unique prefix (`--li=5`). Before all
+# that, GNU tail accepts an obsolete count when it is the only option and at
+# most one file follows: `-5`, `+3`, `-2c`, `-10f`.
 
-pub const DEFAULT_GREETING: string = "Hello";
+from cli.count import (parse_count, parse_seconds, parse_size, quote_arg);
+
+pub const HEADERS_AUTO: int = 0;
+pub const HEADERS_NEVER: int = 1;
+pub const HEADERS_ALWAYS: int = 2;
 
 pub struct Options {
-    pub command: string;
-    pub operands: list[string];
     pub help: bool;
     pub version: bool;
-    pub verbose: bool;
-    pub shout: bool;
-    pub greeting: string;
+    pub count: int;
+    pub count_bytes: bool;
+    pub from_start: bool;
+    pub headers: int;
+    pub zero: bool;
+    pub follow: bool;
+    pub sleep_ms: int;
+    pub operands: list[string];
 }
 
-pub func parse_args(argv: list[string]): Result[Options, string] {
-    var command = "";
-    var operands: list[string] = [];
+# A command line tail cannot run: GNU's message, and whether to follow it
+# with the "Try 'tail --help'" line (bad numbers do not get one).
+pub struct UsageError {
+    pub message: string;
+    pub try_help: bool;
+}
+
+# The obsolete count option, when the command line has one.
+pub struct Obsolete {
+    pub found: bool;
+    pub count: int;
+    pub count_bytes: bool;
+    pub from_start: bool;
+    pub follow: bool;
+    pub problem: string;
+}
+
+# tail's long options, in GNU's order (the order of an ambiguity message).
+pub func long_names(): list[string] {
+    return [
+        "bytes", "follow", "lines", "quiet", "silent", "sleep-interval",
+        "verbose", "zero-terminated", "help", "version",
+    ];
+}
+
+# Resolves the name of a long option (`given`, without `--` or `=VALUE`)
+# against `names` as getopt_long does: an exact name wins, otherwise the
+# name must be the prefix of exactly one option. `arg` is the argument as
+# typed, for the error message.
+pub func match_long(given: string, arg: string, names: list[string]): Result[string, string] {
+    var found: list[string] = [];
+    for (name in names) {
+        if (name == given) {
+            return Ok(name);
+        }
+        if (name.startsWith(given)) {
+            found.push(name);
+        }
+    }
+    if (found.len() == 1) {
+        return Ok(found[0]);
+    }
+    if (found.len() == 0) {
+        return Err(i"unrecognized option '{$ arg $}'");
+    }
+    var listed: list[string] = [];
+    for (name in found) {
+        listed.push(i"'--{$ name $}'");
+    }
+    return Err(i"option '{$ arg $}' is ambiguous; possibilities: {$ listed.join(" ") $}");
+}
+
+# Checks the value of `--follow=HOW` as GNU's argmatch does: `name` or
+# `descriptor`, or a unique prefix of one.
+pub func check_follow(how: string): Result[string, string] {
+    var found: list[string] = [];
+    for (name in ["descriptor", "name"]) {
+        if (name == how) {
+            return Ok(name);
+        }
+        if (name.startsWith(how)) {
+            found.push(name);
+        }
+    }
+    if (found.len() == 1) {
+        return Ok(found[0]);
+    }
+    let kind = if (found.len() == 0) { "invalid" } else { "ambiguous" };
+    let lines = [
+        kind + " argument " + quote_arg(how) + " for '--follow'",
+        "Valid arguments are:",
+        "  - 'descriptor'",
+        "  - 'name'",
+    ];
+    return Err(lines.join("\n"));
+}
+
+func usage_error(message: string): UsageError {
+    return UsageError(message = message, try_help = true);
+}
+
+func number_error(message: string): UsageError {
+    return UsageError(message = message, try_help = false);
+}
+
+func is_digit(ch: string): bool {
+    return ch.len() == 1 and "0123456789".index_of(ch) >= 0;
+}
+
+func not_obsolete(): Obsolete {
+    return Obsolete(found = false, count = 0, count_bytes = false, from_start = false, follow = false, problem = "");
+}
+
+# GNU tail's obsolete count (parse_obsolete_option): `-N` or `+N` with
+# optional digits, then `b` (units of 512 bytes), `c` (bytes) or `l`
+# (lines), then `f` (follow). It applies only when it is the first argument
+# and is followed by nothing, by one operand, or by `--` (and one operand).
+pub func obsolete_count(argv: list[string]): Obsolete {
+    let n = argv.len();
+    let fits = n == 1
+        or (n == 2 and !(argv[1].startsWith("-") and argv[1].len() > 1))
+        or ((n == 2 or n == 3) and argv[1] == "--");
+    if (n == 0 or !fits) {
+        return not_obsolete();
+    }
+    var chars: list[string] = [];
+    for (ch in argv[0]) {
+        chars.push(ch);
+    }
+    if (chars.len() == 0 or (chars[0] != "-" and chars[0] != "+")) {
+        return not_obsolete();
+    }
+    let from_start = chars[0] == "+";
+    if (!from_start) {
+        # "-" is standard input and "-c" an option that needs a value.
+        let probe = if (chars.len() > 1 and chars[1] == "c") { 2 } else { 1 };
+        if (probe >= chars.len()) {
+            return not_obsolete();
+        }
+    }
+
+    var i = 1;
+    var digits = "";
+    while (i < chars.len() and is_digit(chars[i])) {
+        digits += chars[i];
+        i += 1;
+    }
+    var default_count = 10;
+    var count_bytes = false;
+    var unit = 1;
+    if (i < chars.len() and (chars[i] == "b" or chars[i] == "c" or chars[i] == "l")) {
+        if (chars[i] == "b") {
+            default_count = 10 * 512;
+            unit = 512;
+        }
+        count_bytes = chars[i] != "l";
+        i += 1;
+    }
+    var follow = false;
+    if (i < chars.len() and chars[i] == "f") {
+        follow = true;
+        i += 1;
+    }
+    if (i < chars.len()) {
+        return not_obsolete();
+    }
+
+    var count = default_count;
+    var problem = "";
+    if (digits != "") {
+        let size = parse_size(digits);
+        if (size.problem != "" or size.value > 9223372036854775807 / unit) {
+            problem = "invalid number: " + quote_arg(argv[0]) + ": Numerical result out of range";
+        } else {
+            count = size.value * unit;
+        }
+    }
+    return Obsolete(
+        found = true,
+        count = count,
+        count_bytes = count_bytes,
+        from_start = from_start,
+        follow = follow,
+        problem = problem,
+    );
+}
+
+pub func parse_args(argv: list[string]): Result[Options, UsageError] {
     var help = false;
     var version = false;
-    var verbose = false;
-    var shout = false;
-    var greeting = DEFAULT_GREETING;
+    var count = 10;
+    var count_bytes = false;
+    var from_start = false;
+    var headers = HEADERS_AUTO;
+    var zero = false;
+    var follow = false;
+    var sleep_ms = 1000;
+    var operands: list[string] = [];
     var only_operands = false;
-
     var i = 0;
-    while (i < argv.len()) {
+
+    let old = obsolete_count(argv);
+    if (old.found) {
+        if (old.problem != "") {
+            return Err(number_error(old.problem));
+        }
+        count = old.count;
+        count_bytes = old.count_bytes;
+        from_start = old.from_start;
+        follow = old.follow;
+        i = 1;
+    }
+
+    while (i < argv.len() and !help and !version) {
         let arg = argv[i];
         i += 1;
-
         if (only_operands or arg == "-" or !arg.startsWith("-")) {
-            if (command.is_empty()) {
-                command = arg;
-            } else {
-                operands.push(arg);
-            }
+            operands.push(arg);
             continue;
         }
         if (arg == "--") {
@@ -47,52 +232,122 @@ pub func parse_args(argv: list[string]): Result[Options, string] {
             continue;
         }
 
-        # Split `--name=value` into its name and inline value.
-        var name = arg;
-        var inline_value: Option[string] = None;
-        if (arg.startsWith("--") and arg.contains("=")) {
-            let parts = arg.split("=");
-            name = parts[0];
-            inline_value = Some(parts.slice(1).join("="));
-        }
-
-        if (name == "-g" or name == "--greeting") {
-            match inline_value {
-                Some(v) => { greeting = v; },
-                None => {
-                    if (i >= argv.len()) {
-                        return Err(i"option '{$ name $}' requires a value");
-                    }
-                    greeting = argv[i];
-                    i += 1;
+        # The option that takes a value (c, n or s), and its value.
+        var option = "";
+        var value = "";
+        if (arg.startsWith("--")) {
+            let body = arg.slice(2);
+            let eq = body.index_of("=");
+            let given = if (eq >= 0) { body.slice(0, eq) } else { body };
+            let name = match match_long(given, arg, long_names()) {
+                Ok(found) => found,
+                Err(msg) => {
+                    return Err(usage_error(msg));
                 },
+            };
+            if (name == "bytes" or name == "lines" or name == "sleep-interval") {
+                if (eq >= 0) {
+                    value = body.slice(eq + 1);
+                } else if (i < argv.len()) {
+                    value = argv[i];
+                    i += 1;
+                } else {
+                    return Err(usage_error(i"option '--{$ name $}' requires an argument"));
+                }
+                option = if (name == "bytes") { "c" } else if (name == "lines") { "n" } else { "s" };
+            } else if (name == "follow") {
+                if (eq >= 0) {
+                    match check_follow(body.slice(eq + 1)) {
+                        Ok(how) => {},
+                        Err(msg) => {
+                            return Err(usage_error(msg));
+                        },
+                    }
+                }
+                follow = true;
+            } else if (eq >= 0) {
+                return Err(usage_error(i"option '--{$ name $}' doesn't allow an argument"));
+            } else if (name == "quiet" or name == "silent") {
+                headers = HEADERS_NEVER;
+            } else if (name == "verbose") {
+                headers = HEADERS_ALWAYS;
+            } else if (name == "zero-terminated") {
+                zero = true;
+            } else if (name == "help") {
+                help = true;
+            } else {
+                version = true;
             }
-            continue;
+        } else {
+            var letters: list[string] = [];
+            for (ch in arg.slice(1)) {
+                letters.push(ch);
+            }
+            var k = 0;
+            while (k < letters.len() and option == "") {
+                let letter = letters[k];
+                k += 1;
+                if (letter == "c" or letter == "n" or letter == "s") {
+                    option = letter;
+                    if (k < letters.len()) {
+                        var rest: list[string] = [];
+                        while (k < letters.len()) {
+                            rest.push(letters[k]);
+                            k += 1;
+                        }
+                        value = rest.join("");
+                    } else if (i < argv.len()) {
+                        value = argv[i];
+                        i += 1;
+                    } else {
+                        return Err(usage_error(i"option requires an argument -- '{$ letter $}'"));
+                    }
+                } else if (letter == "f") {
+                    follow = true;
+                } else if (letter == "q") {
+                    headers = HEADERS_NEVER;
+                } else if (letter == "v") {
+                    headers = HEADERS_ALWAYS;
+                } else if (letter == "z") {
+                    zero = true;
+                } else if (is_digit(letter)) {
+                    return Err(number_error(i"option used in invalid context -- {$ letter $}"));
+                } else {
+                    return Err(usage_error(i"invalid option -- '{$ letter $}'"));
+                }
+            }
         }
 
-        if (inline_value.is_some()) {
-            return Err(i"option '{$ name $}' does not take a value");
-        }
-        if (name == "-h" or name == "--help") {
-            help = true;
-        } else if (name == "-V" or name == "--version") {
-            version = true;
-        } else if (name == "-v" or name == "--verbose") {
-            verbose = true;
-        } else if (name == "--shout") {
-            shout = true;
-        } else {
-            return Err(i"unknown option '{$ name $}'");
+        if (option == "s") {
+            sleep_ms = match parse_seconds(value) {
+                Ok(ms) => ms,
+                Err(msg) => {
+                    return Err(number_error(msg));
+                },
+            };
+        } else if (option != "") {
+            let parsed = match parse_count(value, option == "n") {
+                Ok(c) => c,
+                Err(msg) => {
+                    return Err(number_error(msg));
+                },
+            };
+            count = parsed.value;
+            count_bytes = option == "c";
+            from_start = parsed.from_start;
         }
     }
 
     return Ok(Options(
-        command = command,
-        operands = operands,
         help = help,
         version = version,
-        verbose = verbose,
-        shout = shout,
-        greeting = greeting,
+        count = count,
+        count_bytes = count_bytes,
+        from_start = from_start,
+        headers = headers,
+        zero = zero,
+        follow = follow,
+        sleep_ms = sleep_ms,
+        operands = operands,
     ));
 }

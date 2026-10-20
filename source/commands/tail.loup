@@ -1,0 +1,232 @@
+@mode(host.dual)
+
+# tail: prints the last lines (-n) or bytes (-c) of each operand, or
+# everything from line or byte N on (+N), with a `==> NAME <==` header
+# before each operand when there are several (or -v). With -f it then
+# polls the files and prints what is appended to them.
+
+from appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE);
+from cli.args import (Options, HEADERS_ALWAYS, HEADERS_AUTO);
+from cli.output import (print_bytes, file_size, copy_from);
+from io.fs import (isDir, isFile);
+from system.time import (sleepNs);
+
+# Joins `pieces[start..]` with `delim` between them.
+func join_from(pieces: list[string], start: int, delim: string): string {
+    var out: list[string] = [];
+    for (i in start..pieces.len()) {
+        if (i > start) {
+            out.push(delim);
+        }
+        out.push(pieces[i]);
+    }
+    return out.join("");
+}
+
+# The lines tail prints from `text`, delimited by `delim` ("\n", or NUL
+# under -z): the last `count`, or with `from_start` everything from line
+# `count` on (+0 and +1 both mean the whole text). A last line without a
+# delimiter counts as a line. Splitting and joining work on bytes, so every
+# byte of the kept lines is unchanged.
+pub func tail_lines(text: string, count: int, from_start: bool, delim: string): string {
+    let pieces = text.split(delim);
+    let ended = pieces.len() - 1;
+    let total = if (pieces[ended] == "") { ended } else { ended + 1 };
+    var start = 0;
+    if (from_start) {
+        start = if (count > 1) { count - 1 } else { 0 };
+    } else if (count < total) {
+        start = total - count;
+    }
+    if (start >= total) {
+        return "";
+    }
+    return join_from(pieces, start, delim);
+}
+
+# The offset of the first byte tail prints from an operand of `size` bytes:
+# the last `count` bytes, or with `from_start` everything from byte `count`.
+pub func first_byte(size: int, count: int, from_start: bool): int {
+    if (from_start) {
+        let skip = if (count > 1) { count - 1 } else { 0 };
+        return if (skip >= size) { size } else { skip };
+    }
+    return if (count >= size) { 0 } else { size - count };
+}
+
+# The header line printed before an operand, with an empty line before it
+# unless it is the first.
+pub func header(name: string, first: bool): string {
+    let gap = if (first) { "" } else { "\n" };
+    return gap + "==> " + name + " <==\n";
+}
+
+# Whether to print headers for `operand_count` operands.
+pub func show_headers(opts: Options, operand_count: int): bool {
+    return opts.headers == HEADERS_ALWAYS or (opts.headers == HEADERS_AUTO and operand_count > 1);
+}
+
+# A file name quoted as GNU's quoteaf does for plain and simple names: in
+# single quotes, or in double quotes if it holds a single quote.
+pub func quote_name(name: string): string {
+    if (name.index_of("'") < 0) {
+        return "'" + name + "'";
+    }
+    let awkward = name.index_of("\"") >= 0 or name.index_of("$") >= 0
+        or name.index_of("`") >= 0 or name.index_of("\\") >= 0;
+    if (!awkward) {
+        return "\"" + name + "\"";
+    }
+    return "'" + name.replace("'", "'\\''") + "'";
+}
+
+# The reason in a runtime IoError message such as
+# "read_text failed on 'x': Permission denied (os error 13)".
+pub func io_reason(message: string): string {
+    var reason = message;
+    let start = reason.index_of("': ");
+    if (start >= 0) {
+        reason = reason.slice(start + 3);
+    }
+    let end = reason.index_of(" (os error");
+    if (end >= 0) {
+        reason = reason.slice(0, end);
+    }
+    return reason;
+}
+
+func cannot_open(name: string, reason: string): void {
+    printErr(APP_NAME + ": cannot open " + quote_name(name) + " for reading: " + reason);
+}
+
+# The -f loop: every `sleep_ms` milliseconds, print whatever was appended to
+# each file since `offsets`, with its header when output switches files.
+# `last` is the index of the file printed last. It never returns.
+func follow(titles: list[string], paths: list[string], offsets: list[int], headers: bool, last: int, sleep_ms: int): void {
+    var reached: list[int] = [];
+    for (offset in offsets) {
+        reached.push(offset);
+    }
+    var shown = last;
+    while (true) {
+        sleepNs(sleep_ms * 1000000);
+        for (i in 0..paths.len()) {
+            let size = file_size(paths[i]);
+            if (size >= 0 and size < reached[i]) {
+                printErr(APP_NAME + ": " + titles[i] + ": file truncated");
+                reached[i] = 0;
+            }
+            if (size > reached[i]) {
+                if (headers and shown != i) {
+                    print(header(titles[i], false));
+                    shown = i;
+                }
+                reached[i] = copy_from(paths[i], reached[i]);
+            }
+        }
+    }
+}
+
+pub func run_tail(opts: Options): int {
+    var names: list[string] = opts.operands;
+    if (names.len() == 0) {
+        names.push("-");
+    }
+    let headers = show_headers(opts, names.len());
+    let delim = if (opts.zero) { str(char.of(0)) } else { "\n" };
+    var status = EXIT_OK;
+    var first = true;
+    var opened = 0;
+
+    # The files -f keeps watching, and how far each has been printed.
+    var titles: list[string] = [];
+    var paths: list[string] = [];
+    var offsets: list[int] = [];
+    var last = -1;
+
+    for (name in names) {
+        # GNU starts -f as if the last operand had just been printed, even
+        # one that could not be read.
+        last = -1;
+        let stdin = name == "-";
+        let title = if (stdin) { "standard input" } else { name };
+        let path = if (stdin) { "/dev/stdin" } else { name };
+        if (!stdin and !exists(name)) {
+            cannot_open(name, "No such file or directory");
+            status = EXIT_FAILURE;
+            continue;
+        }
+        if (!stdin and isDir(name)) {
+            if (headers) {
+                print(header(title, first));
+                first = false;
+            }
+            printErr(APP_NAME + ": error reading " + quote_name(name) + ": Is a directory");
+            if (opts.follow) {
+                printErr(APP_NAME + ": " + name + ": cannot follow end of this type of file; giving up on this name");
+            }
+            status = EXIT_FAILURE;
+            continue;
+        }
+
+        var problem = "";
+        var size = 0;
+        if (opts.count_bytes) {
+            var data = bytesFromInts([]);
+            try {
+                data = readBytes(path);
+            } catch (IoError as e) {
+                problem = io_reason(e.message);
+            }
+            if (problem == "") {
+                if (headers) {
+                    print(header(title, first));
+                    first = false;
+                }
+                size = data.len();
+                print_bytes(data.slice(first_byte(size, opts.count, opts.from_start), size));
+            }
+        } else {
+            var text = "";
+            try {
+                text = readText(path);
+            } catch (IoError as e) {
+                problem = io_reason(e.message);
+            }
+            if (problem == "") {
+                if (headers) {
+                    print(header(title, first));
+                    first = false;
+                }
+                size = text.byteLength();
+                print(tail_lines(text, opts.count, opts.from_start, delim));
+            }
+        }
+        if (problem != "") {
+            cannot_open(name, problem);
+            status = EXIT_FAILURE;
+            continue;
+        }
+        opened += 1;
+
+        # A pipe cannot be read again, so -f ignores standard input unless it
+        # is a regular file.
+        if (opts.follow and (!stdin or isFile(path))) {
+            last = paths.len();
+            titles.push(title);
+            paths.push(path);
+            offsets.push(size);
+        }
+    }
+
+    if (opts.follow) {
+        if (opened == 0) {
+            printErr(APP_NAME + ": no files remaining");
+            return EXIT_FAILURE;
+        }
+        if (paths.len() > 0) {
+            follow(titles, paths, offsets, headers, last, opts.sleep_ms);
+        }
+    }
+    return status;
+}

@@ -1,64 +1,109 @@
 @mode(host.dual)
 
 from debug.assert import (expect, expectEq);
-from cli.args import (parse_args, DEFAULT_GREETING);
+from cli.args import (
+    parse_args, obsolete_count, check_follow, match_long, long_names,
+    HEADERS_AUTO, HEADERS_NEVER, HEADERS_ALWAYS,
+);
 
-func test_no_arguments(): void {
+func test_defaults(): void {
     let none: list[string] = [];
     let opts = parse_args(none).unwrap();
-    expectEq(opts.command, "", "no command");
-    expectEq(opts.operands.len(), 0, "no operands");
-    expectEq(opts.greeting, DEFAULT_GREETING, "default greeting");
-    expect(!opts.help and !opts.version and !opts.verbose and !opts.shout, "no flags set");
+    expectEq(opts.count, 10, "ten lines");
+    expect(!opts.count_bytes and !opts.from_start and !opts.zero, "last lines");
+    expect(!opts.follow, "no -f");
+    expectEq(opts.sleep_ms, 1000, "one second");
+    expectEq(opts.headers, HEADERS_AUTO, "headers when several files");
 }
 
-func test_command_and_operands(): void {
-    let opts = parse_args(["hello", "Ann"]).unwrap();
-    expectEq(opts.command, "hello", "command");
-    expectEq(opts.operands.len(), 1, "one operand");
-    expectEq(opts.operands[0], "Ann", "operand");
+func test_count_options(): void {
+    let lines = parse_args(["-n", "3", "f"]).unwrap();
+    expect(lines.count == 3 and !lines.count_bytes and !lines.from_start, "-n 3");
+    let start = parse_args(["-n+4"]).unwrap();
+    expect(start.count == 4 and start.from_start, "-n+4");
+    let bytes = parse_args(["--bytes=+2"]).unwrap();
+    expect(bytes.count == 2 and bytes.count_bytes and bytes.from_start, "--bytes=+2");
+    let last = parse_args(["-c", "+7", "-n", "2"]).unwrap();
+    expect(last.count == 2 and !last.count_bytes and !last.from_start, "the last count wins");
 }
 
-func test_flags_anywhere(): void {
-    let opts = parse_args(["-v", "hello", "--shout", "Ann"]).unwrap();
-    expect(opts.verbose, "verbose");
-    expect(opts.shout, "shout");
-    expectEq(opts.command, "hello", "command");
-    expectEq(opts.operands[0], "Ann", "operand");
+func test_follow_options(): void {
+    let opts = parse_args(["-fs", "0.5", "log"]).unwrap();
+    expect(opts.follow, "-f");
+    expectEq(opts.sleep_ms, 500, "-s 0.5");
+    expect(parse_args(["--follow=name"]).unwrap().follow, "--follow=name");
+    expect(parse_args(["--fo=d"]).unwrap().follow, "--fo=d");
+    expectEq(parse_args(["--sleep-interval=2"]).unwrap().sleep_ms, 2000, "--sleep-interval=2");
 }
 
-func test_help_and_version(): void {
-    expect(parse_args(["--help"]).unwrap().help, "--help");
-    expect(parse_args(["-h"]).unwrap().help, "-h");
-    expect(parse_args(["--version"]).unwrap().version, "--version");
-    expect(parse_args(["-V"]).unwrap().version, "-V");
+func test_check_follow(): void {
+    expectEq(check_follow("n").unwrap(), "name", "prefix");
+    expectEq(check_follow("descriptor").unwrap(), "descriptor", "exact");
+    expectEq(
+        check_follow("x").unwrap_err(),
+        "invalid argument 'x' for '--follow'\nValid arguments are:\n  - 'descriptor'\n  - 'name'",
+        "invalid",
+    );
+    expect(check_follow("").unwrap_err().startsWith("ambiguous argument '' for"), "ambiguous");
 }
 
-func test_value_option_forms(): void {
-    expectEq(parse_args(["-g", "Hi"]).unwrap().greeting, "Hi", "-g VALUE");
-    expectEq(parse_args(["--greeting", "Hi"]).unwrap().greeting, "Hi", "--greeting VALUE");
-    expectEq(parse_args(["--greeting=a=b"]).unwrap().greeting, "a=b", "--greeting=VALUE keeps '='");
+func test_obsolete_count(): void {
+    let five = obsolete_count(["-5", "f"]);
+    expect(five.found and five.count == 5 and !five.count_bytes and !five.from_start, "-5 f");
+    let plus = obsolete_count(["+3"]);
+    expect(plus.found and plus.count == 3 and plus.from_start, "+3");
+    let bytes = obsolete_count(["-2c"]);
+    expect(bytes.found and bytes.count == 2 and bytes.count_bytes, "-2c");
+    let blocks = obsolete_count(["-2b"]);
+    expect(blocks.found and blocks.count == 1024 and blocks.count_bytes, "-2b");
+    let follow = obsolete_count(["-10f", "--", "log"]);
+    expect(follow.found and follow.follow and follow.count == 10, "-10f -- log");
+    expect(obsolete_count(["-f"]).found, "-f alone is the obsolete form");
+    expect(!obsolete_count(["-5", "a", "b"]).found, "two files");
+    expect(!obsolete_count(["-5", "-v"]).found, "another option");
+    expect(!obsolete_count(["-"]).found, "standard input");
+    expect(!obsolete_count(["-c"]).found, "-c needs a value");
+    expect(!obsolete_count(["-5x"]).found, "bad letter");
+    expect(!obsolete_count(["5"]).found, "no sign");
 }
 
-func test_double_dash_ends_options(): void {
-    let opts = parse_args(["hello", "--", "--shout"]).unwrap();
-    expect(!opts.shout, "--shout after -- is an operand");
-    expectEq(opts.operands[0], "--shout", "operand");
+func test_digits_out_of_place(): void {
+    let err = parse_args(["-n", "1", "-5"]).unwrap_err();
+    expectEq(err.message, "option used in invalid context -- 5", "digit option");
+    expect(!err.try_help, "no Try line");
+    expectEq(parse_args(["-5x"]).unwrap_err().message, "option used in invalid context -- 5", "-5x");
 }
 
-func test_lone_dash_is_operand(): void {
-    let opts = parse_args(["hello", "-"]).unwrap();
-    expectEq(opts.operands[0], "-", "operand");
+func test_headers_and_operands(): void {
+    expectEq(parse_args(["-q", "-v"]).unwrap().headers, HEADERS_ALWAYS, "-q -v");
+    expectEq(parse_args(["--silent"]).unwrap().headers, HEADERS_NEVER, "--silent");
+    let opts = parse_args(["a", "-n", "1", "-", "--", "-v"]).unwrap();
+    expectEq(opts.operands.len(), 3, "a, -, -v");
+    expectEq(opts.operands[2], "-v", "-v after --");
 }
 
-func test_unknown_option(): void {
-    expectEq(parse_args(["--nope"]).unwrap_err(), "unknown option '--nope'", "error message");
+func test_long_names(): void {
+    expectEq(match_long("l", "--l", long_names()).unwrap(), "lines", "prefix");
+    expectEq(
+        match_long("s", "--s", long_names()).unwrap_err(),
+        "option '--s' is ambiguous; possibilities: '--silent' '--sleep-interval'",
+        "ambiguous",
+    );
 }
 
-func test_missing_value(): void {
-    expectEq(parse_args(["-g"]).unwrap_err(), "option '-g' requires a value", "error message");
+func test_usage_errors(): void {
+    let missing = parse_args(["-s"]).unwrap_err();
+    expectEq(missing.message, "option requires an argument -- 's'", "short");
+    expect(missing.try_help, "with the Try line");
+    expectEq(parse_args(["--lines"]).unwrap_err().message, "option '--lines' requires an argument", "long");
+    expectEq(parse_args(["--quiet=1"]).unwrap_err().message, "option '--quiet' doesn't allow an argument", "argument");
+    expectEq(parse_args(["-x"]).unwrap_err().message, "invalid option -- 'x'", "unknown");
+    let seconds = parse_args(["-s", "x"]).unwrap_err();
+    expectEq(seconds.message, "invalid number of seconds: 'x'", "bad seconds");
+    expect(!seconds.try_help, "no Try line for numbers");
 }
 
-func test_flag_with_value(): void {
-    expectEq(parse_args(["--shout=1"]).unwrap_err(), "option '--shout' does not take a value", "error message");
+func test_help_stops_parsing(): void {
+    expect(parse_args(["--help", "-x"]).unwrap().help, "--help first");
+    expect(parse_args(["--vers"]).unwrap().version, "--vers");
 }

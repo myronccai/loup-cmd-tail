@@ -1,7 +1,6 @@
 @mode(host.dual)
 
-# Byte-level I/O through C, for what Loup 1.26.0 cannot do itself. Only a
-# native build can call C (`loup run` stops with "unsupported instruction").
+# Byte-level I/O through C, for what Loup 1.26.0 cannot do itself.
 #
 # - Writing bytes: `print` writes a string's bytes as they are, but a Loup
 #   string can only be built from whole UTF-8 characters, so a slice of
@@ -12,6 +11,12 @@
 #   every `readBytes` stays allocated, so re-reading a growing file at each
 #   check would use the file's size in memory per check. C's stdio gives the
 #   size (fseek/ftell) and reads just the new bytes.
+#
+# Runtime: host.dual. Compiled into the native binary build/tail by `make
+# build`, which links the C library functions declared with `extern native
+# "c"`. Only the native binary can call them: `loup run` stops with
+# "unsupported instruction" at the first call, and the unit tests (Stage0)
+# only call is_utf8.
 
 extern native "c" func putchar(c: int32): int32;
 extern native "c" func fflush(stream: int): int32;

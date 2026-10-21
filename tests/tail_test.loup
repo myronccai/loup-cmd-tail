@@ -1,5 +1,13 @@
 @mode(host.dual)
 
+# Unit tests for what tail selects (commands.tail): last lines, lines from
+# +N, the NUL delimiter, the first byte for -c, headers, file name quoting
+# and IoError reasons.
+#
+# Runtime: host.dual, run by the test runner: `make test` interprets this
+# file with Stage0 (`loup-bootstrap test`, source/ on LOUPPATH), one test
+# per `func test_*()`. It is not part of the binary.
+
 from debug.assert import (expect, expectEq);
 from cli.args import (parse_args);
 from commands.tail import (tail_lines, first_byte, header, show_headers, quote_name, io_reason);

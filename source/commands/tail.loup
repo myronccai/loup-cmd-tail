@@ -4,6 +4,15 @@
 # everything from line or byte N on (+N), with a `==> NAME <==` header
 # before each operand when there are several (or -v). With -f it then
 # polls the files and prints what is appended to them.
+#
+# Runtime: host.dual. Compiled into the native binary build/tail by `make
+# build`; `loup run source/main.loup` interprets the same code up to the
+# -f loop, whose C calls only the native binary can make. tests/e2e.sh
+# tests -f by running build/tail in the background.
+#
+# Structure: pure helpers that pick what to print (tail_lines, first_byte,
+# header, quote_name, io_reason); the -f polling loop (follow); and
+# run_tail, which prints each operand once and collects the files for -f.
 
 from appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE);
 from cli.args import (Options, HEADERS_ALWAYS, HEADERS_AUTO);
@@ -151,6 +160,9 @@ pub func run_tail(opts: Options): int {
         let stdin = name == "-";
         let title = if (stdin) { "standard input" } else { name };
         let path = if (stdin) { "/dev/stdin" } else { name };
+        # Missing files and directories are caught before reading: natively
+        # a failed read ends the program rather than throwing, so the
+        # catches below only help under Stage0.
         if (!stdin and !exists(name)) {
             cannot_open(name, "No such file or directory");
             status = EXIT_FAILURE;
@@ -169,6 +181,9 @@ pub func run_tail(opts: Options): int {
             continue;
         }
 
+        # The first output reads the whole operand: -c as bytes, since a cut
+        # may fall inside a UTF-8 character, -n as text. `size` is where -f
+        # starts watching.
         var problem = "";
         var size = 0;
         if (opts.count_bytes) {

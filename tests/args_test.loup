@@ -10,7 +10,7 @@
 
 from debug.assert import (expect, expectEq);
 from cli.args import (
-    parse_args, obsolete_count, check_follow, match_long, long_names,
+    UsageError, parse_args, obsolete_count, check_follow, match_long, long_names,
     HEADERS_AUTO, HEADERS_NEVER, HEADERS_ALWAYS,
 );
 
@@ -109,6 +109,15 @@ func test_usage_errors(): void {
     let seconds = parse_args(["-s", "x"]).unwrap_err();
     expectEq(seconds.message, "invalid number of seconds: 'x'", "bad seconds");
     expect(!seconds.try_help, "no Try line for numbers");
+    let count = parse_args(["-n", "1x"]).unwrap_err();
+    expectEq(count.message, "invalid number of lines: '1x'", "bad count");
+    expect(!count.try_help, "no Try line for counts");
+}
+
+func test_usage_error_from_string(): void {
+    let e = UsageError.from("invalid number of bytes: 'x'");
+    expectEq(e.message, "invalid number of bytes: 'x'", "message kept");
+    expect(!e.try_help, "a converted error has no Try line");
 }
 
 func test_help_stops_parsing(): void {

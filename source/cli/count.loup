@@ -10,7 +10,7 @@
 # Runtime: host.dual. Compiled into the native binary build/tail by `make
 # build`; `loup run source/main.loup` interprets the same code.
 
-pub const MAX_COUNT: int = 9223372036854775807;
+pub const MAX_COUNT: int = 9_223_372_036_854_775_807;
 
 # A parsed count, or why it is not one: `problem` is "" when `value` is
 # good, "invalid" for text that is not a count, "overflow" for one too large.
@@ -195,10 +195,8 @@ pub func parse_seconds(arg: string): Result[int, string] {
             digits += 1;
             i += 1;
         }
-        while (places < 3) {
-            millis = millis * 10;
-            places += 1;
-        }
+        # Scale what was read to thousandths: `.5` is 500, `.25` is 250.
+        millis *= 10 ** (3 - places);
     }
     if (bad or digits == 0 or i < chars.len()) {
         return Err("invalid number of seconds: " + quote_arg(arg));

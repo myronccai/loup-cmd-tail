@@ -16,7 +16,7 @@
 # then parse_args, which takes the obsolete count if there is one and runs
 # the getopt loop over the remaining arguments.
 
-from cli.count import (parse_count, parse_seconds, parse_size, quote_arg);
+from cli.count import (MAX_COUNT, parse_count, parse_seconds, parse_size, quote_arg);
 
 pub const HEADERS_AUTO: int = 0;
 pub const HEADERS_NEVER: int = 1;
@@ -37,9 +37,22 @@ pub struct Options {
 
 # A command line tail cannot run: GNU's message, and whether to follow it
 # with the "Try 'tail --help'" line (bad numbers do not get one).
-pub struct UsageError {
-    pub message: string;
-    pub try_help: bool;
+#
+# A class implementing From[string], so that `?` on a Result[_, string]
+# turns the error into a UsageError. Such errors here are cli.count's
+# messages about bad counts and intervals, so `from` gives them no Try line.
+pub class UsageError implements From[string] {
+    pub let message: string;
+    pub let try_help: bool;
+
+    new(message: string, try_help: bool) {
+        this.message = message;
+        this.try_help = try_help;
+    }
+
+    pub static func from(message: string): UsageError {
+        return UsageError(message, false);
+    }
 }
 
 # The obsolete count option, when the command line has one.
@@ -113,11 +126,7 @@ pub func check_follow(how: string): Result[string, string] {
 }
 
 func usage_error(message: string): UsageError {
-    return UsageError(message = message, try_help = true);
-}
-
-func number_error(message: string): UsageError {
-    return UsageError(message = message, try_help = false);
+    return UsageError(message, true);
 }
 
 func is_digit(ch: string): bool {
@@ -186,7 +195,7 @@ pub func obsolete_count(argv: list[string]): Obsolete {
     var problem = "";
     if (digits != "") {
         let size = parse_size(digits);
-        if (size.problem != "" or size.value > 9223372036854775807 / unit) {
+        if (size.problem != "" or size.value > MAX_COUNT / unit) {
             problem = "invalid number: " + quote_arg(argv[0]) + ": Numerical result out of range";
         } else {
             count = size.value * unit;
@@ -221,7 +230,7 @@ pub func parse_args(argv: list[string]): Result[Options, UsageError] {
     let old = obsolete_count(argv);
     if (old.found) {
         if (old.problem != "") {
-            return Err(number_error(old.problem));
+            return Err(UsageError.from(old.problem));
         }
         count = old.count;
         count_bytes = old.count_bytes;
@@ -321,7 +330,7 @@ pub func parse_args(argv: list[string]): Result[Options, UsageError] {
                 } else if (letter == "z") {
                     zero = true;
                 } else if (is_digit(letter)) {
-                    return Err(number_error(i"option used in invalid context -- {$ letter $}"));
+                    return Err(UsageError.from(i"option used in invalid context -- {$ letter $}"));
                 } else {
                     return Err(usage_error(i"invalid option -- '{$ letter $}'"));
                 }
@@ -331,19 +340,9 @@ pub func parse_args(argv: list[string]): Result[Options, UsageError] {
         # Values are parsed once the argument has been taken apart; a later
         # -c/-n replaces an earlier one, as in GNU tail.
         if (option == "s") {
-            sleep_ms = match parse_seconds(value) {
-                Ok(ms) => ms,
-                Err(msg) => {
-                    return Err(number_error(msg));
-                },
-            };
+            sleep_ms = parse_seconds(value)?;
         } else if (option != "") {
-            let parsed = match parse_count(value, option == "n") {
-                Ok(c) => c,
-                Err(msg) => {
-                    return Err(number_error(msg));
-                },
-            };
+            let parsed = parse_count(value, option == "n")?;
             count = parsed.value;
             count_bytes = option == "c";
             from_start = parsed.from_start;

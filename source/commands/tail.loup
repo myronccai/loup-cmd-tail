@@ -18,6 +18,7 @@ from appinfo import (APP_NAME, EXIT_OK, EXIT_FAILURE);
 from cli.args import (Options, HEADERS_ALWAYS, HEADERS_AUTO);
 from cli.output import (print_bytes, file_size, copy_from);
 from io.fs import (isDir, isFile);
+from core.time import (Duration);
 from system.time import (sleepNs);
 
 # Joins `pieces[start..]` with `delim` between them.
@@ -117,8 +118,9 @@ func follow(titles: list[string], paths: list[string], offsets: list[int], heade
         reached.push(offset);
     }
     var shown = last;
+    let interval = Duration.ofMillis(sleep_ms);
     while (true) {
-        sleepNs(sleep_ms * 1000000);
+        sleepNs(interval.totalNanoseconds());
         for (i in 0..paths.len()) {
             let size = file_size(paths[i]);
             if (size >= 0 and size < reached[i]) {

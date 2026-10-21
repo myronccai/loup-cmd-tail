@@ -83,6 +83,8 @@ func test_parse_seconds(): void {
     expectEq(parse_seconds(".25").unwrap(), 250, "no whole part");
     expectEq(parse_seconds("1.").unwrap(), 1000, "no fraction digits");
     expectEq(parse_seconds("0.0001").unwrap(), 0, "below a millisecond");
+    expectEq(parse_seconds("0.125").unwrap(), 125, "three places");
+    expectEq(parse_seconds(" 3.07").unwrap(), 3070, "leading blank, two places");
     expectEq(parse_seconds("x").unwrap_err(), "invalid number of seconds: 'x'", "letters");
     expectEq(parse_seconds("-1").unwrap_err(), "invalid number of seconds: '-1'", "negative");
     expect(parse_seconds(".").is_err(), "a lone dot");
